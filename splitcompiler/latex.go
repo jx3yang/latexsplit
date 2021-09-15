@@ -56,7 +56,7 @@ func genNewFileContent(fileName, splitLine, id string) ([]string, error) {
 }
 
 func compile(lines []string, compiler, args string) error {
-	cmd := exec.Command(compiler, args)
+	cmd := exec.Command(compiler, strings.Split(args, " ")...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return err
@@ -89,24 +89,24 @@ func parseLogFile(logFile, id string) ([]int, error) {
 	return pageNums, nil
 }
 
-func splitPDF(fileStem, id string) (string, error) {
+func splitPDF(outputPathStem, id string) (string, error) {
 	tempDir, err := ioutil.TempDir("", id)
 	if err != nil {
 		return "", err
 	}
 	os.Mkdir(tempDir, 0755)
-	err = pdfcup.SplitFile(fileStem+".pdf", tempDir, 1, nil)
+	err = pdfcup.SplitFile(outputPathStem+".pdf", tempDir, 1, nil)
 	if err != nil {
 		return "", err
 	}
 	return tempDir, nil
 }
 
-func mergePDF(dir, fileStem string, start, end, part int) (string, error) {
-	outFile := fmt.Sprintf("%v_%v.pdf", part, fileStem)
+func mergePDF(fromDir, outDir, fileStem string, start, end, part int) (string, error) {
+	outFile := filepath.Join(outDir, fmt.Sprintf("%v_%v.pdf", part, fileStem))
 	inFiles := make([]string, end-start+1)
 	for i := start; i <= end; i++ {
-		inFiles[i-start] = filepath.Join(dir, fmt.Sprintf("%v_%v.pdf", fileStem, i))
+		inFiles[i-start] = filepath.Join(fromDir, fmt.Sprintf("%v_%v.pdf", fileStem, i))
 	}
 	err := pdfcup.MergeCreateFile(inFiles, outFile, nil)
 	return outFile, err
@@ -115,10 +115,10 @@ func mergePDF(dir, fileStem string, start, end, part int) (string, error) {
 func worker(wg *sync.WaitGroup, results chan struct {
 	string
 	error
-}, dir, fileStem string, start, end, part int) {
+}, fromDir, outDir, fileStem string, start, end, part int) {
 	defer wg.Done()
 
-	outFile, err := mergePDF(dir, fileStem, start, end, part)
+	outFile, err := mergePDF(fromDir, outDir, fileStem, start, end, part)
 	results <- struct {
 		string
 		error
@@ -139,20 +139,22 @@ func LatexSplitCompiler(args *argparse.Arguments) ([]string, error) {
 		return nil, err
 	}
 
-	logFile := args.FileStem + ".log"
+	outputPathStem := filepath.Join(args.OutputDir, args.FileStem)
+
+	logFile := outputPathStem + ".log"
 	pageNums, err := parseLogFile(logFile, id)
 	if err != nil {
 		return nil, err
 	}
 
-	numPages, err := pdfcup.PageCountFile(args.FileStem + ".pdf")
+	numPages, err := pdfcup.PageCountFile(outputPathStem + ".pdf")
 	if err != nil {
 		return nil, err
 	}
 	pageNums = append([]int{0}, pageNums...)
 	pageNums = append(pageNums, numPages)
 
-	tempDir, err := splitPDF(args.FileStem, id)
+	tempDir, err := splitPDF(outputPathStem, id)
 	if tempDir != "" {
 		defer os.RemoveAll(tempDir)
 	}
@@ -169,7 +171,7 @@ func LatexSplitCompiler(args *argparse.Arguments) ([]string, error) {
 	wg.Add(len(pageNums) - 1)
 
 	for i := 0; i < len(pageNums)-1; i++ {
-		go worker(wg, results, tempDir, args.FileStem, pageNums[i]+1, pageNums[i+1], i+1)
+		go worker(wg, results, tempDir, args.OutputDir, args.FileStem, pageNums[i]+1, pageNums[i+1], i+1)
 	}
 
 	go func() {
